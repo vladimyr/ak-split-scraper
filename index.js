@@ -1,89 +1,133 @@
-var cheerio         = require('cheerio'),
-    argv            = require('yargs').argv,
-    data            = require('./config/data-constants'),
-    Promise         = require('bluebird'),
-    request         = require('request');
+'use strict';
 
-var cookieJar = request.jar(),
-        request   = request.defaults({
-        jar:                cookieJar,
-        followRedirect:     true,
-        followAllRedirects: true
+var cheerio      = require('cheerio'),
+    request      = require('request'),
+    through      = require('through'),
+    fecha        = require('fecha'),
+    Promise      = require('bluebird'),
+    promiseWhile = require('./lib/promise-while.js'),
+    actions      = require('./lib/actions.js');
+
+var request = request.defaults({
+    jar:                request.jar(),
+    followRedirect:     true,
+    followAllRedirects: true
 });
 
 request = Promise.promisifyAll(request);
+
+
+var baseUrl = 'http://www.ak-split.hr/EN/vozni.red/';
+
+function _getTargetUrl(options){
+    var type = options.type;
+
+    if (type === 'arrival') 
+        return baseUrl + 'VozniRedDolazaka.aspx';
+    else
+        return baseUrl + 'VozniRedOdlazaka.aspx';
+}
+
+function _getSortOrder(options){
+    var type = options.type;
+
+    if (!options.sortBy)
+        return (type === 'arrival') ? 'polazak' : 'dolazak';
     
-var town = argv.town || 'Sibenik';
-var arrival = argv.arrival || 0;
-var date = new Date().toISOString().replace(/T.*/, '');
-
- 		
-if (!arrival) {
-	var constants = data.departure; 
-} else {
-	var constants = data.arrival;
+    if (options.sortBy === 'arrival')
+        return 'dolazak';
+    
+    if (options.sortBy === 'departure')
+        return 'odlazak';
 }
 
-console.log(town, data.towns[town]);
-var  post_data = {
-        __EVENTARGUMENT: '',
-       sortOrder: constants.sortOrder,
-        lineType: constants.lineType,
-        dlDestination: data.towns[town],
-        dlTravelDate: date
- };
 
-function processBody(pageNum) {
-    return function(_, body) {
-        var $ = cheerio.load(body);
-        var totalPages = 0;
-        $('.scheduleTableItem, .scheduleTableAltItem').each(function() {
-            var row = [];
-            $(this).find('td').each(function() {
-                row.push($(this).text());
-            });
-            var output = row.join('\t');
-            if (output.substr(0, 8) != 'Stranica') {
-                console.log(output);
-            } else {
-                totalPages = output.split(/[\s]+/).pop();
-            }
-        }); 
-        
-        if (pageNum === totalPages - 0 + 4 )
-            return; 
+function getRecordsStream(options){
+    options      = options || {},
+    options.type = options.type || 'departure';
+    options.date = options.date || new Date();
 
-        var href = $("a[href^='javascript:__doPostBack']").eq(pageNum).attr("href");
-        var target = href.substring(href.indexOf("'") + 1, href.indexOf(",") - 1);
-        post_data.__EVENTTARGET = target;
-        post_data.__VIEWSTATE = $("#__VIEWSTATE").val();
-        post_data.__VIEWSTATEGENERATOR = $("#__VIEWSTATEGENERATOR").val();
-        post_data.__EVENTVALIDATION = $("#__EVENTVALIDATION").val();
-            
-        if (pageNum != 5)
-            return [];
+    var stationName = options.station || options.stationName,
+        stationCode = options.stationCode;
 
-        var array = [];
-        for (var i = 0; i < totalPages; i++) {
-            array.push(void(0));
-        }
-        return array;
+    // ensure that station is defined
+    if (!stationCode && (!stationName || !stationName.toUpperCase))
+        throw new Error('Station must be defined!');
+
+    var targetStation = {
+        code: stationCode,
+        name: stationName
     };
+
+    var sortOrder  = _getSortOrder(options),
+        targetUrl  = _getTargetUrl(options),
+        lineType   = (options.type === 'arrival') ? 1 : 2,
+        travelDate = fecha.format(options.date, 'YYYY-MM-DD');
+
+    var formData = {
+        __EVENTARGUMENT: '',
+        sortOrder: sortOrder,
+        lineType: lineType,
+        dlTravelDate: travelDate
+    };
+
+    var stations      = {},
+        recordsStream = through();
+
+    var pageIndex = 0;
+
+    function processForm(_, body){
+        return actions.processInitialForm(cheerio.load(body), targetStation, 
+            stations, formData);
+    }
+
+    function processPage(_, body){
+        return actions.processTimetablePage(cheerio.load(body), pageIndex++, 
+            recordsStream, formData);
+    }
+
+    request.getAsync(targetUrl)
+        .spread(processForm)
+        .then(function complete(){
+            // loop through pages
+            return Promise.while(function step(){
+                return request.postAsync(targetUrl, { form: formData })
+                    .spread(processPage);
+            });
+        });
+
+    return recordsStream;
 }
-function postRequest() {
-    return request.postAsync(constants.url, {
-        form: post_data,
-    });
+
+function getRecords(options, callback){
+    var records = [];
+
+    try {
+        getRecordsStream(options)
+            .pipe(through(function write(record){
+                records.push(record)
+            }, function end(){
+                this.queue(null);
+                callback(null, records);
+            }));
+    } catch(err){
+        callback(err);
+    }
 }
-   
-request.getAsync(constants.url) 
-    .spread(postRequest)
-    .spread(processBody(0))
-    .spread(postRequest)
-    .spread(processBody(5))
-    .reduce(function(total, item, index) {
-        return postRequest().spread(processBody(5 + index));
-    });
 
+function getTravelData(options){
+    options = options || {};
 
+    var targetUrl = _getTargetUrl(options);
 
+    return request.getAsync(targetUrl)
+        .spread(function complete(_, body){
+            return actions.processInitialForm(cheerio.load(body));
+        });
+}
+
+module.exports = {
+    getRecordsStream: getRecordsStream,
+    getRecords: getRecords,
+    getTravelData: getTravelData
+};
