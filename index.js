@@ -43,16 +43,21 @@ function _getSortOrder(options){
 
 
 function getRecordsStream(options){
-    options      = options || {},
+    options      = options || {};
     options.type = options.type || 'departure';
     options.date = options.date || new Date();
 
     var stationName = options.station || options.stationName,
         stationCode = options.stationCode;
 
+    var stations      = {},
+        recordsStream = through();
+
     // ensure that station is defined
-    if (!stationCode && (!stationName || !stationName.toUpperCase))
-        throw new Error('Station must be defined!');
+    if (!stationCode && (!stationName || !stationName.toUpperCase)) {
+        recordsStream.emit('error', new Error('Station must be defined!'));
+        return recordsStream;
+    }
 
     var targetStation = {
         code: stationCode,
@@ -70,9 +75,6 @@ function getRecordsStream(options){
         lineType: lineType,
         dlTravelDate: travelDate
     };
-
-    var stations      = {},
-        recordsStream = through();
 
     var pageIndex = 0;
 
@@ -94,6 +96,9 @@ function getRecordsStream(options){
                 return request.postAsync(targetUrl, { form: formData })
                     .spread(processPage);
             });
+        })
+        .catch(function error(err){
+            recordsStream.emit('error', err);
         });
 
     return recordsStream;
@@ -102,17 +107,14 @@ function getRecordsStream(options){
 function getRecords(options, callback){
     var records = [];
 
-    try {
-        getRecordsStream(options)
-            .pipe(through(function write(record){
-                records.push(record)
-            }, function end(){
-                this.queue(null);
-                callback(null, records);
-            }));
-    } catch(err){
-        callback(err);
-    }
+    getRecordsStream(options)
+        .on('error', callback)
+        .pipe(through(function write(record){
+            records.push(record);
+        }, function end(){
+            this.queue(null);
+            callback(null, records);
+        }));
 }
 
 function getTravelData(options){
