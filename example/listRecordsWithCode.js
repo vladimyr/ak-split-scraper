@@ -4,9 +4,9 @@ var fecha      = require('fecha'),
     getRecords = require('../index.js').getRecords;
 
 var options = {
-    stationCode: '000095', // Zagreb
+    stationCode: '000002', // Zagreb
     type: 'departure',
-    date: fecha.parse('3/20/15', 'shortDate') // M/D/YY
+    date: fecha.parse('8/29/16', 'shortDate') // M/D/YY
 };
 
 console.log('List of %ss to: %s (date: %s)', options.type, 

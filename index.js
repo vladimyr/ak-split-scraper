@@ -5,7 +5,7 @@ var cheerio      = require('cheerio'),
     through      = require('through'),
     fecha        = require('fecha'),
     Promise      = require('bluebird'),
-    promiseWhile = require('./lib/promise-while.js'),
+    promiseWhile = require('promise-while')(Promise),
     actions      = require('./lib/actions.js');
 
 var request = request.defaults({
@@ -88,13 +88,18 @@ function getRecordsStream(options){
             recordsStream, formData);
     }
 
+    var loop = true;
+
     request.getAsync(targetUrl)
         .spread(processForm)
         .then(function complete(){
             // loop through pages
-            return Promise.while(function step(){
+            return promiseWhile(function predicate() {
+                return loop;
+            }, function step(){
                 return request.postAsync(targetUrl, { form: formData })
-                    .spread(processPage);
+                    .spread(processPage)
+                    .then(function(result) { loop = !result; });
             });
         })
         .catch(function error(err){
